@@ -1,55 +1,99 @@
-import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'dart:async';
+
+import 'package:socket_io_client/socket_io_client.dart' as io;
 
 class SignalingService {
-  late IO.Socket socket;
+  SignalingService({String? serverUrl})
+      : serverUrl = serverUrl ?? 'http://10.21.8.149:3000';
 
-  Function(Map)? onOffer;
-  Function(Map)? onAnswer;
-  Function(Map)? onIce;
+  final String serverUrl;
+  io.Socket? _socket;
 
-  void connect(String roomId) {
-    socket = IO.io(
-      "http://10.21.8.149:3000",
-      IO.OptionBuilder()
-          .setTransports(['websocket']) // VERY IMPORTANT
-          .disableAutoConnect()
-          .build(),
+  Function(Map<String, dynamic>)? onOffer;
+  Function(Map<String, dynamic>)? onAnswer;
+  Function(Map<String, dynamic>)? onIce;
+  Function(String)? onLog;
+
+  bool get isConnected => _socket?.connected ?? false;
+
+  Future<void> connect(String roomId) async {
+    final completer = Completer<void>();
+    if (_socket != null) {
+      _socket!.dispose();
+      _socket = null;
+    }
+
+    _socket = io.io(
+      serverUrl,
+      io.OptionBuilder().setTransports(['websocket']).disableAutoConnect().build(),
     );
 
-    socket.connect();
-
-    socket.onConnect((_) {
-      print("✅ Connected to server");
-      socket.emit("join-room", {"roomId": roomId});
+    _socket!.onConnect((_) {
+      _log('Connected to signaling server.');
+      _socket!.emit('join-room', {'roomId': roomId});
+      _log('Joined room $roomId.');
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
     });
 
-    socket.on("offer", (data) {
-      print("📩 OFFER RECEIVED");
-      onOffer?.call(Map<String, dynamic>.from(data));
+    _socket!.onConnectError((error) {
+      _log('Signaling connect error: $error');
+      if (!completer.isCompleted) {
+        completer.completeError(error ?? 'Unknown signaling connection error');
+      }
     });
 
-    socket.on("answer", (data) {
-      print("📩 ANSWER RECEIVED");
-      onAnswer?.call(Map<String, dynamic>.from(data));
+    _socket!.onDisconnect((_) {
+      _log('Disconnected from signaling server.');
     });
 
-    socket.on("ice-candidate", (data) => onIce?.call(Map<String, dynamic>.from(data)));
+    _socket!.on('offer', (data) {
+      _log('Offer received from room peer.');
+      onOffer?.call(Map<String, dynamic>.from(data as Map));
+    });
+
+    _socket!.on('answer', (data) {
+      _log('Answer received from room peer.');
+      onAnswer?.call(Map<String, dynamic>.from(data as Map));
+    });
+
+    _socket!.on('ice-candidate', (data) {
+      _log('ICE candidate received from room peer.');
+      onIce?.call(Map<String, dynamic>.from(data as Map));
+    });
+
+    _socket!.on('room-members', (data) {
+      final payload = Map<String, dynamic>.from(data as Map);
+      _log('Room ${payload['roomId']} now has ${payload['occupants']} participant(s).');
+    });
+
+    _socket!.connect();
+    await completer.future;
   }
 
-  void sendOffer(Map offer, String roomId) {
-    socket.emit("offer", {"roomId": roomId, ...offer});
+  void sendOffer(Map<String, dynamic> offer, String roomId) {
+    _socket?.emit('offer', {'roomId': roomId, ...offer});
+    _log('Offer sent for room $roomId.');
   }
 
-  void sendAnswer(Map answer, String roomId) {
-    socket.emit("answer", {"roomId": roomId, ...answer});
+  void sendAnswer(Map<String, dynamic> answer, String roomId) {
+    _socket?.emit('answer', {'roomId': roomId, ...answer});
+    _log('Answer sent for room $roomId.');
   }
 
-  void sendIce(candidate, String roomId) {
-    socket.emit("ice-candidate", {
-      "roomId": roomId,
-      "candidate": candidate.candidate,
-      "sdpMid": candidate.sdpMid,
-      "sdpMLineIndex": candidate.sdpMLineIndex,
+  void sendIce(dynamic candidate, String roomId) {
+    _socket?.emit('ice-candidate', {
+      'roomId': roomId,
+      'candidate': candidate.candidate,
+      'sdpMid': candidate.sdpMid,
+      'sdpMLineIndex': candidate.sdpMLineIndex,
     });
+    _log('ICE candidate sent for room $roomId.');
+  }
+
+  void _log(String message) {
+    print('📡 $message');
+    onLog?.call(message);
   }
 }
